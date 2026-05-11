@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified evaluation entry point for released LEHD-MnLP checkpoints."""
+"""Unified evaluation entry point for released MnLP checkpoints."""
 
 from __future__ import annotations
 

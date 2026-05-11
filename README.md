@@ -1,7 +1,7 @@
-# LEHD-MnLP
+# Multi-node Lookahead Prediction for Vehicle Routing Problems (IJCAI'26)
 
-This repository contains the release code for Multi-node Lookahead Prediction
-(MnLP) on the LEHD backbone for TSP and CVRP.
+This repository contains the code for Multi-node Lookahead Prediction
+(MnLP) for TSP and CVRP.
 
 MnLP is a training-time auxiliary objective. The released checkpoints run with
 the standard LEHD-style autoregressive decoder at inference time, so no MnLP
@@ -53,6 +53,7 @@ CVRP/data/vrp1000_test_lkh.txt
 ```
 
 Training data is also excluded because the original files are multi-GB.
+The original training and test data can be found in the repository of LEHD (https://github.com/CIAM-Group/NCO_code/tree/main/single_objective/LEHD).
 
 ## Evaluation
 
@@ -78,26 +79,17 @@ python scripts/evaluate.py \
   --rrc 0
 ```
 
-Expected greedy paper results are documented in
-[`REPRODUCIBILITY.md`](REPRODUCIBILITY.md).
 
-## Attribution
+## Reference
 
-This implementation builds on the LEHD codebase:
+Please cite the paper if you used the code:
 
 ```bibtex
-@inproceedings{luo2023neural,
-  title={Neural Combinatorial Optimization with Heavy Decoder: Toward Large Scale Generalization},
-  author={Fu Luo and Xi Lin and Fei Liu and Qingfu Zhang and Zhenkun Wang},
-  booktitle={NeurIPS},
-  year={2023}
+@inproceedings{jiang2026learning,
+  title={Learning with Foresight: Enhancing Neural Routing Policy via Multi-Node Lookahead Prediction},
+  author={Xia Jiang and Yaoxin Wu and Yew-Soon Ong and Yingqian Zhang},
+  booktitle={International Joint Conference on Artificial Intelligence (IJCAI)},
+  year={2026}
 }
 ```
 
-Please also cite the MnLP paper when using this release.
-
-## License And Use
-
-The upstream LEHD code states that it is for non-commercial use only. This
-release preserves that notice. Contact the authors for business or commercial
-use.

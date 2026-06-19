@@ -1,43 +1,108 @@
-# Multi-node Lookahead Prediction for Vehicle Routing Problems (IJCAI'26)
+# LaRP: Lookahead Rollout Planning for CVRP
 
-This repository contains the code for Multi-node Lookahead Prediction
-(MnLP) for CVRP, with rollout planning via a learned value world model.
+Extension of **Multi-node Lookahead Prediction (MnLP)** [IJCAI'26] with **inference-time rollout planning** using a learned **value world model (WM)** on CVRP.
 
-MnLP is a training-time auxiliary objective. The released checkpoint runs with
-the standard LEHD-style autoregressive decoder at inference time, so no MnLP
-modules are used to add inference overhead beyond loading the trained model
-weights.
+The released MnLP policy (`checkpoints/cvrp_mnlp.pt`) is the **baseline decoder**. At test time it runs greedy autoregressive decoding (no MTP overhead). This repo adds a WM that scores partial routes and optionally overrides greedy among top-K policy candidates.
 
-## Repository Layout
+## Architecture
 
-```text
-CVRP/                 CVRP model, environment, training, and testing code
-utils/                Shared logging and utility helpers
-scripts/evaluate.py   Greedy / rollout world-model evaluation entry point
-checkpoints/          Released CVRP checkpoint
+```mermaid
+flowchart TB
+    subgraph baseline["Baseline (MnLP greedy)"]
+        P[CVRP instance] --> Enc[Transformer encoder-decoder]
+        Enc --> Greedy[argmax action per step]
+        Greedy --> Tour[Complete CVRP tour]
+    end
+
+    subgraph wm_train["World model training"]
+        Prefix[Partial route prefix] --> WM[CVRPWorldModel]
+        WM --> Vhat["Predict remaining cost"]
+        Target["LKH or policy completion cost"] --> Loss["Huber + ranking loss"]
+        Vhat --> Loss
+    end
+
+    subgraph rollout["Rollout planner (inference)"]
+        State[Current partial state] --> Policy[MnLP top-K + greedy]
+        Policy --> Cand[Candidate actions]
+        Cand --> Score["1-step edge cost + WM(state')"]
+        Score --> Gate{"score < greedy - margin?"}
+        Gate -->|yes| Pick[Override action]
+        Gate -->|no| Keep[Keep greedy]
+    end
 ```
 
-The paper CVRP checkpoint is included:
+### 1. Baseline policy (MnLP)
+
+| Component | Detail |
+|-----------|--------|
+| Model | LEHD-style transformer encoder–decoder (`CVRP/VRPModel.py`) |
+| Training | Multi-token prediction (MTP) auxiliary loss at train time |
+| Inference | Greedy decoding, one customer/depot step at a time |
+| Checkpoint | `checkpoints/cvrp_mnlp.pt` |
+
+### 2. Value world model
+
+| Component | Detail |
+|-----------|--------|
+| Class | `CVRPWorldModel` (`CVRP/world_model.py`) |
+| Encoder | 2-layer transformer, 256-dim, 4 heads |
+| Node features (6) | x, y, demand, visited, per-node capacity, dist-to-current |
+| Context (6) | current xy, remaining capacity, progress, prefix cost, unvisited fraction |
+| Output | Normalized remaining tour cost → `clamp(pred,0) × cost_scale` |
+| Simulator | Exact CVRP transitions (`CVRP/simulator.py`) |
+
+### 3. Rollout planner
+
+| Component | Detail |
+|-----------|--------|
+| Class | `RolloutWMPlanner` (`CVRP/rollout_planner.py`) |
+| Per step | MnLP top-K feasible actions + greedy baseline |
+| Score | `edge_cost(first_action) + WM.predict_remaining(state_after_action)` |
+| Selection | Switch from greedy only if `score < greedy_score - margin` (**margin gate**) |
+
+### 4. WM training modes
+
+`CVRP/train_world_model.py` supports:
+
+| Mode | Prefix source | Loss |
+|------|---------------|------|
+| `lkh` | Random prefixes along LKH optimal tours | Smooth L1 on remaining cost |
+| `policy` | Random prefixes along greedy MnLP tours | Smooth L1 + pairwise ranking hinge |
+| `mixed` | 50/50 LKH and policy prefixes | Same as above |
+
+Ranking pairs compare greedy vs one alternate top-K action at the same policy state, with targets from completing the tour greedily.
+
+## Repository layout
 
 ```text
-checkpoints/cvrp_mnlp.pt
+CVRP/                     Model, env, WM, rollout planner, training
+  world_model.py          Value world model
+  simulator.py            Exact partial-route simulator
+  rollout_planner.py      Top-K + WM scoring at inference
+  train_world_model.py    WM training (LKH / policy / mixed)
+  policy_rollout.py       Greedy trajectory collection for WM training
+scripts/
+  evaluate.py             Greedy and rollout_wm evaluation
+  run_wm_eval.sh          Train policy WM + 4-episode comparison
+  train_wm_nohup.sh       Detached WM training
+checkpoints/
+  cvrp_mnlp.pt            Paper MnLP CVRP checkpoint (baseline)
 ```
+
+WM checkpoints (`cvrp_world_model.pt`, `cvrp_world_model_policy.pt`) are local training outputs and are gitignored.
 
 ## Setup
 
-The experiments were run with Python 3.8.6 and PyTorch 1.12.1.
-
 ```bash
 pip install -r requirements.txt
+conda activate mnlp   # Python 3.8, PyTorch 2.x (needs nn.RMSNorm)
 ```
 
-CUDA is recommended for the full benchmark evaluations. CPU mode is supported
-for small smoke tests by passing `--device cpu`.
+CPU works for smoke tests (`--device cpu`). Full 128-instance evals are faster on GPU.
 
 ## Data
 
-Datasets are not committed to this repository. Place the benchmark files under
-the original locations expected by the code:
+Benchmark files are not committed. Place under:
 
 ```text
 CVRP/data/vrp100_test_lkh.txt
@@ -46,37 +111,75 @@ CVRP/data/vrp500_test_lkh.txt
 CVRP/data/vrp1000_test_lkh.txt
 ```
 
-Training data is also excluded because the original files are multi-GB.
-The original training and test data can be found in the repository of LEHD (https://github.com/CIAM-Group/NCO_code/tree/main/single_objective/LEHD).
+Download from [LEHD](https://github.com/CIAM-Group/NCO_code/tree/main/single_objective/LEHD).
 
-## Evaluation
+## Experiments and reported gaps
 
-Run greedy CVRP200 with the released checkpoint:
+Gap = `(student_cost - LKH_optimal) / LKH_optimal × 100%`. Lower is better.
+
+### Baseline — MnLP greedy (reproduced)
+
+| Dataset | Episodes | Gap | Notes |
+|---------|----------|-----|-------|
+| **CVRP200** | 128 | **3.206%** | Matches paper; `RRC=0`, CPU |
+| CVRP100 | — | — | Supported; not re-run in this extension |
+| CVRP500 | — | — | Supported; not re-run in this extension |
+| CVRP1000 | — | — | Supported; not re-run in this extension |
 
 ```bash
-python scripts/evaluate.py \
-  --size 200 \
-  --data CVRP/data/vrp200_test_lkh.txt \
-  --checkpoint checkpoints/cvrp_mnlp.pt \
-  --rrc 0
+python scripts/evaluate.py --size 200 --checkpoint checkpoints/cvrp_mnlp.pt \
+  --rrc 0 --device cpu
 ```
 
-Rollout planning with a trained world model:
+### Extension — rollout + world model (CVRP200)
+
+All rollout runs below use the same 4 test instances (episodes 0–3), `top_k=3`, `RRC=0`, CPU.
+
+| Method | WM checkpoint | Margin | Gap (4 ep) | vs greedy |
+|--------|---------------|--------|------------|-----------|
+| Greedy MnLP | — | — | **1.435%** | baseline |
+| Rollout + WM | LKH prefixes (`cvrp_world_model.pt`) | 0 | 17.851% | much worse — WM overrides with wrong actions |
+| Rollout + WM | LKH prefixes | 1.0 | **1.435%** | matches greedy (no harmful overrides) |
+| Rollout + WM | Policy prefixes (`cvrp_world_model_policy.pt`) | 1.0 | 2.468% | worse — ranking still insufficient |
+| Rollout + WM | Policy prefixes | 10.0 | **1.435%** | matches greedy |
+
+**WM training (LKH prefixes):** best val MAE **0.44** at epoch 3 (`cost_scale ≈ 20.05`).
+
+**WM training (policy prefixes + ranking):** best val MAE **1.18** (`cvrp_world_model_policy.pt`).
+
+**Takeaway:** Low val MAE on LKH states does not imply good action ranking on greedy policy states. The margin gate prevents catastrophic regression; improving gap below greedy requires better WM ranking on policy states (more/better policy-prefix training, tuning `margin`, `top_k`, ranking loss).
+
+128-instance rollout eval was **not** run — criterion was rollout ≤ greedy on 4 episodes first.
+
+## Commands
+
+**Greedy baseline (smoke, 4 episodes):**
 
 ```bash
-python scripts/evaluate.py \
-  --size 200 \
-  --planner rollout_wm \
+python scripts/evaluate.py --size 200 --checkpoint checkpoints/cvrp_mnlp.pt \
+  --rrc 0 --device cpu --episodes 4 --batch-size 1
+```
+
+**Train WM on policy prefixes:**
+
+```bash
+python CVRP/train_world_model.py --device cpu --epochs 15 --steps-per-epoch 256 \
+  --batch-size 16 --episodes 128 --trajectory-source policy \
+  --policy-checkpoint checkpoints/cvrp_mnlp.pt \
+  --ranking-weight 0.5 --output checkpoints/cvrp_world_model_policy.pt
+```
+
+**Rollout eval with margin gate:**
+
+```bash
+python scripts/evaluate.py --size 200 --planner rollout_wm \
   --wm-checkpoint checkpoints/cvrp_world_model_policy.pt \
-  --wm-top-k 3 \
-  --wm-margin 1.0 \
-  --rrc 0 \
-  --device cpu
+  --wm-top-k 3 --wm-margin 1.0 --rrc 0 --device cpu --episodes 4 --batch-size 1
 ```
 
 ## Reference
 
-Please cite the paper if you used the code:
+MnLP base method — please cite:
 
 ```bibtex
 @inproceedings{jiang2026learning,

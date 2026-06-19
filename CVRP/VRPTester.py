@@ -42,6 +42,24 @@ class VRPTester():
         checkpoint = torch.load(checkpoint_fullname, map_location=device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
 
+        self.planner = self.tester_params.get('planner', 'greedy')
+        self.rollout_planner = None
+        if self.planner == 'rollout_wm':
+            from world_model import load_world_model
+            from rollout_planner import RolloutWMPlanner
+
+            wm_path = self.tester_params['wm_checkpoint']
+            wm_ckpt = torch.load(wm_path, map_location=device)
+            self.world_model = load_world_model(wm_ckpt, device)
+            self.rollout_planner = RolloutWMPlanner(
+                self.model,
+                self.world_model,
+                top_k=self.tester_params.get('wm_top_k', 3),
+                horizon=self.tester_params.get('wm_horizon', 5),
+                score_margin=self.tester_params.get('wm_score_margin', 1.0),
+                device=device,
+            )
+
         # utility
         self.time_estimator = TimeEstimator()
         self.time_estimator_2 = TimeEstimator()
@@ -180,12 +198,24 @@ class VRPTester():
 
             while not done:
 
-                # Handle the new MTP model signature - in test mode it returns 5 values
-                result = self.model(state, self.env.selected_node_list, self.env.solution, current_step,
-                                   raw_data_capacity=self.env.raw_data_capacity)
-                
-                # Extract the values we need (first 5 are the same as before)
-                loss_node, selected_teacher, selected_student, selected_flag_teacher, selected_flag_student = result[:5]
+                if self.rollout_planner is not None:
+                    selected_student, selected_flag_student = self.rollout_planner.select_action(
+                        self.env,
+                        state,
+                        current_step,
+                        self.env.raw_data_capacity,
+                        self.origin_problem,
+                    )
+                    selected_teacher = selected_student
+                    selected_flag_teacher = selected_flag_student
+                    loss_node = torch.tensor(0, device=self.device)
+                else:
+                    # Handle the new MTP model signature - in test mode it returns 5 values
+                    result = self.model(state, self.env.selected_node_list, self.env.solution, current_step,
+                                       raw_data_capacity=self.env.raw_data_capacity)
+                    
+                    # Extract the values we need (first 5 are the same as before)
+                    loss_node, selected_teacher, selected_student, selected_flag_teacher, selected_flag_student = result[:5]
 
                 if current_step == 0:
                     selected_flag_teacher = torch.ones(B_V, dtype=torch.int)
@@ -205,9 +235,15 @@ class VRPTester():
 
             escape_time, _ = clock.get_est_string(1, 1)
 
-            self.logger.info("Greedy, name:{}, gap:{:5f} %, Elapsed[{}], stu_l:{:5f} , opt_l:{:5f}".format(name,
-                ((current_best_length.mean() - self.optimal_length.mean()) / self.optimal_length.mean()).item() * 100, escape_time,
-            current_best_length.mean().item(), self.optimal_length.mean().item()))
+            planner_label = self.planner if self.rollout_planner is None else f"{self.planner}(margin={self.rollout_planner.score_margin})"
+            self.logger.info("{}, name:{}, gap:{:5f} %, Elapsed[{}], stu_l:{:5f} , opt_l:{:5f}".format(
+                planner_label,
+                name,
+                ((current_best_length.mean() - self.optimal_length.mean()) / self.optimal_length.mean()).item() * 100,
+                escape_time,
+                current_best_length.mean().item(),
+                self.optimal_length.mean().item(),
+            ))
 
 
             ####################################################

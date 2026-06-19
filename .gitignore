@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Logs and runtime artifacts
+logs/
+*.log
+*.pid
+
+# Local environment
+.env
+.venv/
+venv/
+env/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Benchmark datasets (multi-GB; see README / LEHD repo)
+CVRP/data/
+
+# Checkpoints: paper CVRP release only; ignore WM / smoke / local training outputs
+checkpoints/*
+!checkpoints/cvrp_mnlp.pt
+
+# Temp dirs from evaluate.py checkpoint symlinks
+lehd_mnlp_eval_*/

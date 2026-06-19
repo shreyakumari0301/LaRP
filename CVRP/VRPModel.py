@@ -77,12 +77,9 @@ class VRPModel(nn.Module):
                 mtp_losses = {}
 
         if self.mode == 'test':
-            remaining_capacity = state.problems[:, 1, 3]
-            if current_step <= 1:
-                self.encoded_nodes = self.encoder(state.problems, self.capacity)
-                
-            # In test mode, we don't need to return decoder_out
-            probs = self.decoder(self.encoded_nodes, selected_node_list, self.capacity, remaining_capacity)
+            probs, split_line = self.get_action_probs(
+                state, selected_node_list, raw_data_capacity, current_step
+            )
 
             selected_node_student = probs.argmax(dim=1)
             is_via_depot_student = selected_node_student >= split_line
@@ -103,6 +100,20 @@ class VRPModel(nn.Module):
             return loss_node, selected_node_teacher, selected_node_student, selected_flag_teacher, selected_flag_student, mtp_losses
         else:
             return loss_node, selected_node_teacher, selected_node_student, selected_flag_teacher, selected_flag_student
+
+    def get_action_probs(self, state, selected_node_list, raw_data_capacity, current_step):
+        if raw_data_capacity is not None:
+            self.capacity = raw_data_capacity.ravel()[0].item()
+        batch_size = state.problems.shape[0]
+        problem_size = state.problems.shape[1]
+        split_line = problem_size - 1
+
+        remaining_capacity = state.problems[:, 1, 3]
+        if current_step <= 1:
+            self.encoded_nodes = self.encoder(state.problems, self.capacity)
+
+        probs = self.decoder(self.encoded_nodes, selected_node_list, self.capacity, remaining_capacity)
+        return probs, split_line
 
     def _compute_mtp_losses(self, selected_node_list, solution, current_step, problem_size,
                             remaining_capacity, problems=None):

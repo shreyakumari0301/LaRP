@@ -1,9 +1,9 @@
 # Multi-node Lookahead Prediction for Vehicle Routing Problems (IJCAI'26)
 
 This repository contains the code for Multi-node Lookahead Prediction
-(MnLP) for TSP and CVRP.
+(MnLP) for CVRP, with rollout planning via a learned value world model.
 
-MnLP is a training-time auxiliary objective. The released checkpoints run with
+MnLP is a training-time auxiliary objective. The released checkpoint runs with
 the standard LEHD-style autoregressive decoder at inference time, so no MnLP
 modules are used to add inference overhead beyond loading the trained model
 weights.
@@ -11,17 +11,15 @@ weights.
 ## Repository Layout
 
 ```text
-TSP/                  TSP model, environment, training, and testing code
 CVRP/                 CVRP model, environment, training, and testing code
 utils/                Shared logging and utility helpers
-scripts/evaluate.py   Unified greedy/RRC evaluation entry point
-checkpoints/          Released method checkpoints
+scripts/evaluate.py   Greedy / rollout world-model evaluation entry point
+checkpoints/          Released CVRP checkpoint
 ```
 
-The paper TSP and CVRP checkpoints are included:
+The paper CVRP checkpoint is included:
 
 ```text
-checkpoints/tsp_mnlp.pt
 checkpoints/cvrp_mnlp.pt
 ```
 
@@ -42,10 +40,6 @@ Datasets are not committed to this repository. Place the benchmark files under
 the original locations expected by the code:
 
 ```text
-TSP/data/test_TSP100_n1w.txt
-TSP/data/test_TSP200_n128.txt
-TSP/data/test_TSP500_n128.txt
-TSP/data/test_TSP1000_n128.txt
 CVRP/data/vrp100_test_lkh.txt
 CVRP/data/vrp200_test_lkh.txt
 CVRP/data/vrp500_test_lkh.txt
@@ -57,28 +51,28 @@ The original training and test data can be found in the repository of LEHD (http
 
 ## Evaluation
 
-Run greedy TSP1000 with the released checkpoint:
+Run greedy CVRP200 with the released checkpoint:
 
 ```bash
 python scripts/evaluate.py \
-  --problem tsp \
-  --size 1000 \
-  --data TSP/data/test_TSP1000_n128.txt \
-  --checkpoint checkpoints/tsp_mnlp.pt \
-  --rrc 0
-```
-
-Run greedy CVRP1000 with the released checkpoint:
-
-```bash
-python scripts/evaluate.py \
-  --problem cvrp \
-  --size 1000 \
-  --data CVRP/data/vrp1000_test_lkh.txt \
+  --size 200 \
+  --data CVRP/data/vrp200_test_lkh.txt \
   --checkpoint checkpoints/cvrp_mnlp.pt \
   --rrc 0
 ```
 
+Rollout planning with a trained world model:
+
+```bash
+python scripts/evaluate.py \
+  --size 200 \
+  --planner rollout_wm \
+  --wm-checkpoint checkpoints/cvrp_world_model_policy.pt \
+  --wm-top-k 3 \
+  --wm-margin 1.0 \
+  --rrc 0 \
+  --device cpu
+```
 
 ## Reference
 
@@ -92,4 +86,3 @@ Please cite the paper if you used the code:
   year={2026}
 }
 ```
-

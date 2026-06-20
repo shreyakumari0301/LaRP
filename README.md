@@ -133,23 +133,29 @@ python scripts/evaluate.py --size 200 --checkpoint checkpoints/cvrp_mnlp.pt \
 
 ### Extension — rollout + world model (CVRP200)
 
-All rollout runs below use the same 4 test instances (episodes 0–3), `top_k=3`, `RRC=0`, CPU.
+**Paper baseline (MnLP greedy, 128 episodes): 3.206% gap.** That is the number to beat.
 
-| Method | WM checkpoint | Margin | Gap (4 ep) | vs greedy |
-|--------|---------------|--------|------------|-----------|
-| Greedy MnLP | — | — | **1.435%** | baseline |
+The table below is a **4-episode dev subset** (episodes 0–3) used for fast rollout iteration. On this subset greedy MnLP scores **1.435%** — easier instances than the full 128-episode average, so dev gaps are **not** comparable to 3.206%. Rollout rows are compared to greedy **on the same 4 instances**.
+
+| Method | WM checkpoint | Margin | Gap (4-ep dev) | vs greedy (same 4 ep) |
+|--------|---------------|--------|----------------|------------------------|
+| Greedy MnLP | — | — | 1.435% | reference on dev set |
 | Rollout + WM | LKH prefixes (`cvrp_world_model.pt`) | 0 | 17.851% | much worse — WM overrides with wrong actions |
-| Rollout + WM | LKH prefixes | 1.0 | **1.435%** | matches greedy (no harmful overrides) |
-| Rollout + WM | Policy prefixes (`cvrp_world_model_policy.pt`) | 1.0 | 2.468% | worse — ranking still insufficient |
-| Rollout + WM | Policy prefixes | 10.0 | **1.435%** | matches greedy |
+| Rollout + WM | LKH prefixes | 1.0 | 1.435% | matches greedy on dev set |
+| Rollout + WM | Policy prefixes (`cvrp_world_model_policy.pt`) | 1.0 | 2.468% | worse on dev set |
+| Rollout + WM | Policy prefixes | 10.0 | 1.435% | matches greedy on dev set |
+| Rollout + WM | Fine-tuned mixed (`cvrp_world_model_policy_ft.pt`) | 1.0 | 7.101% | worse than pre-FT and greedy |
+| Rollout + WM | Fine-tuned mixed | 10.0 | 1.435% | matches greedy on dev set |
+
+**Success criterion for full eval:** rollout gap ≤ **3.206%** on 128 episodes (MnLP baseline), after rollout ≤ greedy on the 4-ep dev set.
 
 **WM training (LKH prefixes):** best val MAE **0.44** at epoch 3 (`cost_scale ≈ 20.05`).
 
 **WM training (policy prefixes + ranking):** best val MAE **1.18** (`cvrp_world_model_policy.pt`).
 
-**Takeaway:** Low val MAE on LKH states does not imply good action ranking on greedy policy states. The margin gate prevents catastrophic regression; improving gap below greedy requires better WM ranking on policy states (more/better policy-prefix training, tuning `margin`, `top_k`, ranking loss).
+**Fine-tuning (mixed prefixes, init from policy WM):** 20 epochs; best val MAE **0.91** at epoch 14 → `checkpoints/cvrp_world_model_policy_ft.pt`. Rollout on 4-ep dev at margin=1.0: **7.10%** (worse than pre-FT); margin=10.0 matches greedy. Val MAE improved but action ranking at inference did not.
 
-128-instance rollout eval was **not** run — criterion was rollout ≤ greedy on 4 episodes first.
+**Takeaway:** Low val MAE on LKH states does not imply good action ranking on greedy policy states. The margin gate prevents catastrophic regression; the goal is to beat **3.206%** on 128 instances, not just match greedy on the 4-ep dev slice.
 
 ## Commands
 
@@ -160,7 +166,14 @@ python scripts/evaluate.py --size 200 --checkpoint checkpoints/cvrp_mnlp.pt \
   --rrc 0 --device cpu --episodes 4 --batch-size 1
 ```
 
-**Train WM on policy prefixes:**
+**Fine-tune WM (mixed prefixes, from policy checkpoint):**
+
+```bash
+bash scripts/train_wm_finetune.sh
+# monitor: tail -f logs/wm_finetune_*.log
+```
+
+**Train WM on policy prefixes (from scratch):**
 
 ```bash
 python CVRP/train_world_model.py --device cpu --epochs 15 --steps-per-epoch 256 \

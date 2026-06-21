@@ -130,6 +130,98 @@ def complete_greedy_from_prefix(
     return solution, total_cost
 
 
+def topk_ranking_pairs_at_step(
+    env,
+    model,
+    episode_idx: int,
+    step: int,
+    problems: torch.Tensor,
+    policy_solution: torch.Tensor,
+    raw_capacity: float,
+    device: torch.device,
+    top_k: int = 3,
+) -> list[tuple[SimState, SimState]]:
+    """All pairwise ranking pairs among top-K actions ranked by completed tour cost."""
+    state, _, done = replay_env_to_step(env, model, episode_idx, step, device)
+    if done:
+        return []
+
+    probs, split_line = model.get_action_probs(
+        state, env.selected_node_list, env.raw_data_capacity, step
+    )
+    cand_nodes, cand_flags, cand_valid = filter_feasible_candidates(
+        probs, split_line, env.selected_node_list, top_k
+    )
+
+    prefix_nodes = policy_solution[:, :step, 0]
+    prefix_flags = policy_solution[:, :step, 1]
+    if step > 0:
+        prefix_cost_value = float(
+            prefix_cal_length(
+                problems[:, :, [0, 1]],
+                prefix_nodes,
+                prefix_flags,
+            ).item()
+        )
+    else:
+        prefix_cost_value = 0.0
+
+    scored: list[tuple[float, SimState]] = []
+    for k in range(cand_nodes.shape[1]):
+        if not cand_valid[0, k]:
+            continue
+        node = cand_nodes[0, k : k + 1]
+        flag = cand_flags[0, k : k + 1]
+        ext_nodes = torch.cat((prefix_nodes, node.unsqueeze(1)), dim=1)
+        ext_flags = torch.cat((prefix_flags, flag.unsqueeze(1)), dim=1)
+        _, total_cost = complete_greedy_from_prefix(
+            env, model, episode_idx, ext_nodes, ext_flags, device
+        )
+        post_state = state_after_action(
+            problems,
+            policy_solution,
+            step,
+            raw_capacity,
+            prefix_cost_value,
+            node,
+            flag,
+            device,
+        )
+        scored.append((total_cost, post_state))
+
+    if len(scored) < 2:
+        return []
+
+    scored.sort(key=lambda item: item[0])
+    best_state = scored[0][1]
+    pairs: list[tuple[SimState, SimState]] = []
+    for total_cost, worse_state in scored[1:]:
+        if total_cost > scored[0][0] + 1e-6:
+            pairs.append((best_state, worse_state))
+    return pairs
+
+
+def prefix_cal_length(problems: torch.Tensor, order_node: torch.Tensor, order_flag: torch.Tensor) -> torch.Tensor:
+    order_node_ = order_node.clone()
+    order_flag_ = order_flag.clone()
+    index_small = torch.le(order_flag_, 0.5)
+    index_bigger = torch.gt(order_flag_, 0.5)
+    order_flag_[index_small] = order_node_[index_small]
+    order_flag_[index_bigger] = 0
+    roll_node = order_node_.roll(dims=1, shifts=1)
+    seq_len = order_node_.shape[1]
+    order_gathering_index = order_node_.unsqueeze(2).expand(-1, seq_len, 2)
+    order_loc = problems.gather(dim=1, index=order_gathering_index)
+    roll_gathering_index = roll_node.unsqueeze(2).expand(-1, seq_len, 2)
+    roll_loc = problems.gather(dim=1, index=roll_gathering_index)
+    order_lengths = ((order_loc - roll_loc) ** 2)
+    order_flag_[:, 0] = 0
+    flag_gathering_index = order_flag_.unsqueeze(2).expand(-1, seq_len, 2)
+    flag_loc = problems.gather(dim=1, index=flag_gathering_index)
+    roll_lengths = ((roll_loc - flag_loc) ** 2)
+    return (order_lengths.sum(2).sqrt() + roll_lengths.sum(2).sqrt()).sum(1)
+
+
 def alternate_action_at_step(
     env,
     model,

@@ -157,6 +157,28 @@ The table below is a **4-episode dev subset** (episodes 0–3) used for fast rol
 
 **Takeaway:** Low val MAE on LKH states does not imply good action ranking on greedy policy states. The margin gate prevents catastrophic regression; the goal is to beat **3.206%** on 128 instances, not just match greedy on the 4-ep dev slice.
 
+### Next iteration (v2 — in progress)
+
+Changes from v1:
+- **Ranking on all top-K candidates** at each policy state (same K as inference), not just greedy vs one alt
+- **Policy-only** training (no mixed LKH prefixes)
+- **Ranking-heavy loss:** `ranking_weight=2.0`, `value_weight=0.3`, `ranking_fraction=0.6`
+- **Override logging** during rollout (`overrides=X/Y` in eval logs)
+
+```bash
+# Train v2
+bash scripts/train_wm_v2.sh
+tail -f logs/wm_v2_*.log
+
+# Dev eval after checkpoint saved
+bash scripts/eval_rollout_dev.sh checkpoints/cvrp_world_model_v2.pt 1.0
+
+# If dev rollout <= greedy, run full 128-ep benchmark
+python scripts/evaluate.py --size 200 --planner rollout_wm \
+  --wm-checkpoint checkpoints/cvrp_world_model_v2.pt \
+  --wm-top-k 3 --wm-margin 1.0 --rrc 0 --device cpu --batch-size 1
+```
+
 ## Commands
 
 **Greedy baseline (smoke, 4 episodes):**

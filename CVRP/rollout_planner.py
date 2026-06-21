@@ -89,6 +89,15 @@ class RolloutWMPlanner:
         self.horizon = horizon
         self.score_margin = score_margin
         self.device = device or torch.device("cpu")
+        self.reset_stats()
+
+    def reset_stats(self) -> None:
+        self.stats = {"steps": 0, "overrides": 0}
+
+    def override_rate(self) -> float:
+        if self.stats["steps"] == 0:
+            return 0.0
+        return self.stats["overrides"] / self.stats["steps"]
 
     def _sim_from_snap(self, snap: dict, raw_data_capacity) -> SimState:
         return SimState(
@@ -178,6 +187,13 @@ class RolloutWMPlanner:
             best_scores = torch.where(better, scores, best_scores)
             best_nodes = torch.where(better, cand_nodes[:, k], best_nodes)
             best_flags = torch.where(better, cand_flags[:, k], best_flags)
+
+        same_as_greedy = (
+            (best_nodes == greedy_node).all() and (best_flags == greedy_flag).all()
+        )
+        self.stats["steps"] += batch_size
+        if not same_as_greedy:
+            self.stats["overrides"] += batch_size
 
         restore_env(env, snap)
         return best_nodes, best_flags

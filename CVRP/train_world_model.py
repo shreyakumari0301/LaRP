@@ -25,6 +25,7 @@ from policy_rollout import (
     complete_greedy_from_prefix,
     greedy_rollout,
     state_after_action,
+    topk_ranking_pairs_at_step,
 )
 from simulator import SimState, apply_action
 from world_model import CVRPWorldModel
@@ -75,6 +76,30 @@ def parse_args():
         type=float,
         default=0.05,
         help="Hinge margin in normalized cost units for ranking loss.",
+    )
+    parser.add_argument(
+        "--rank-top-k",
+        type=int,
+        default=3,
+        help="Top-K candidates used for ranking loss (should match inference top_k).",
+    )
+    parser.add_argument(
+        "--max-rank-pairs",
+        type=int,
+        default=4,
+        help="Max ranking pairs sampled per training step.",
+    )
+    parser.add_argument(
+        "--value-weight",
+        type=float,
+        default=1.0,
+        help="Weight for value regression loss relative to ranking loss scale.",
+    )
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional WM checkpoint to fine-tune from (loads model weights only).",
     )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
@@ -273,6 +298,34 @@ def sample_policy_ranking_pair(
     return state_alt, state_greedy, remaining_alt, remaining_greedy
 
 
+def sample_policy_topk_ranking_pairs(
+    env: VRPEnv,
+    cache: PolicyTrajectoryCache,
+    policy_model: VRPModel,
+    episode_idx: int,
+    device: torch.device,
+    top_k: int,
+    max_pairs: int,
+) -> list[tuple[SimState, SimState]]:
+    problems, policy_solution, _, _, raw_capacity = cache.get(episode_idx)
+    step = random.randrange(policy_solution.shape[1])
+    pairs = topk_ranking_pairs_at_step(
+        env,
+        policy_model,
+        episode_idx,
+        step,
+        problems,
+        policy_solution,
+        raw_capacity,
+        device,
+        top_k=top_k,
+    )
+    if not pairs:
+        return []
+    random.shuffle(pairs)
+    return pairs[:max_pairs]
+
+
 def collate_batch(states: list[SimState], targets: list[float], cost_scale: float, device: torch.device):
     batch_size = len(states)
     problems = torch.cat([s.problems for s in states], dim=0)
@@ -404,6 +457,17 @@ def train():
         num_heads=args.num_heads,
         cost_scale=cost_scale,
     ).to(device)
+
+    if args.init_checkpoint is not None:
+        if not args.init_checkpoint.exists():
+            raise FileNotFoundError(f"Init checkpoint not found: {args.init_checkpoint}")
+        init_ckpt = torch.load(args.init_checkpoint, map_location=device)
+        model.load_state_dict(init_ckpt["model_state_dict"])
+        if "cost_scale" in init_ckpt:
+            model.cost_scale = float(init_ckpt["cost_scale"])
+            cost_scale = model.cost_scale
+        print(f"loaded init weights from {args.init_checkpoint}")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
@@ -449,23 +513,43 @@ def train():
 
             for _ in range(ranking_count):
                 episode_idx = random.choice(train_indices)
-                pair = sample_policy_ranking_pair(
-                    env, policy_cache, policy_model, episode_idx, device
+                pairs = sample_policy_topk_ranking_pairs(
+                    env,
+                    policy_cache,
+                    policy_model,
+                    episode_idx,
+                    device,
+                    top_k=args.rank_top_k,
+                    max_pairs=args.max_rank_pairs,
                 )
-                if pair is None:
-                    state, remaining = sample_policy_transition(policy_cache, episode_idx, device)
-                    batch_states.append(state)
-                    batch_targets.append(remaining)
+                if not pairs:
+                    pair = sample_policy_ranking_pair(
+                        env, policy_cache, policy_model, episode_idx, device
+                    )
+                    if pair is None:
+                        state, remaining = sample_policy_transition(policy_cache, episode_idx, device)
+                        batch_states.append(state)
+                        batch_targets.append(remaining)
+                    else:
+                        better, worse, _, _ = pair
+                        better_states.append(better)
+                        worse_states.append(worse)
                 else:
-                    better, worse, _, _ = pair
-                    better_states.append(better)
-                    worse_states.append(worse)
+                    for better, worse in pairs:
+                        better_states.append(better)
+                        worse_states.append(worse)
 
-            batched, target_tensor, _ = collate_batch(
-                batch_states, batch_targets, cost_scale, device
-            )
-            pred = model(batched)
-            value_loss = F.smooth_l1_loss(pred, target_tensor)
+            if batch_states:
+                batched, target_tensor, _ = collate_batch(
+                    batch_states, batch_targets, cost_scale, device
+                )
+                pred = model(batched)
+                value_loss = F.smooth_l1_loss(pred, target_tensor)
+                max_pred = max(max_pred, float(pred.detach().max().item()))
+                max_target = max(max_target, float(target_tensor.max().item()))
+            else:
+                value_loss = torch.tensor(0.0, device=device)
+
             rank_loss = ranking_loss(
                 model,
                 better_states,
@@ -474,7 +558,7 @@ def train():
                 cost_scale,
                 device,
             )
-            loss = value_loss + args.ranking_weight * rank_loss
+            loss = args.value_weight * value_loss + args.ranking_weight * rank_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -485,8 +569,6 @@ def train():
             epoch_loss += float(value_loss.item())
             epoch_rank_loss += float(rank_loss.item())
             epoch_steps += 1
-            max_pred = max(max_pred, float(pred.detach().max().item()))
-            max_target = max(max_target, float(target_tensor.max().item()))
 
         train_loss = epoch_loss / max(epoch_steps, 1)
         rank_loss_avg = epoch_rank_loss / max(epoch_steps, 1)

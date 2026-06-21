@@ -191,6 +191,8 @@ class VRPTester():
 
             self.origin_problem = self.env.problems.clone().detach()
 
+            if self.rollout_planner is not None:
+                self.rollout_planner.reset_stats()
 
             self.optimal_length= self.env._get_travel_distance_2(self.origin_problem, self.env.solution)
             name = 'vrp'+str(self.env.solution.shape[1])
@@ -236,8 +238,16 @@ class VRPTester():
             escape_time, _ = clock.get_est_string(1, 1)
 
             planner_label = self.planner if self.rollout_planner is None else f"{self.planner}(margin={self.rollout_planner.score_margin})"
-            self.logger.info("{}, name:{}, gap:{:5f} %, Elapsed[{}], stu_l:{:5f} , opt_l:{:5f}".format(
+            override_msg = ""
+            if self.rollout_planner is not None:
+                override_msg = ", overrides={}/{} ({:.1f}%)".format(
+                    self.rollout_planner.stats["overrides"],
+                    self.rollout_planner.stats["steps"],
+                    self.rollout_planner.override_rate() * 100,
+                )
+            self.logger.info("{}{}, name:{}, gap:{:5f} %, Elapsed[{}], stu_l:{:5f} , opt_l:{:5f}".format(
                 planner_label,
+                override_msg,
                 name,
                 ((current_best_length.mean() - self.optimal_length.mean()) / self.optimal_length.mean()).item() * 100,
                 escape_time,
